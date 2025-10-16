@@ -11,14 +11,13 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model as tf_load_model
 
 # ---------------------------
-# Paths (your requested names)
+# Paths
 # ---------------------------
-MODEL_PATH = r"model/conversationalchatbotmodel.h5"     # your Keras model
-CSV_PATH = r"data/mental_health_training.csv"            # 4 cols: question,answer,pattern,tag
-INTENTS_JSON_PATH = r"data/intents.json"                       # optional but recommended for exact class order
+MODEL_PATH = r"model/conversationalchatbotmodel.h5"     # Keras model
+CSV_PATH = r"data/mental_health_training.csv"           # 4 cols: question,answer,pattern,tag
+INTENTS_JSON_PATH = r"data/intents.json"               # For class order and replies
 CONF_THRESHOLD = 0.45
-
-EMBEDDER_NAME = "bert-base-uncased"  # same hidden size 768 as your model expects
+EMBEDDER_NAME = "bert-base-uncased"  # Matches notebook
 
 # ---------------------------
 # Page UI
@@ -51,14 +50,19 @@ hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 12px 0 
 @st.cache_resource(show_spinner=True)
 def load_tf_model(path: str):
     if not os.path.exists(path):
+        st.error(f"Model not found at {path}")
         raise FileNotFoundError(f"Model not found at {path}")
     return tf_load_model(path, compile=False)
 
 @st.cache_resource(show_spinner=True)
 def load_bert(name: str):
-    tok = AutoTokenizer.from_pretrained(name)
-    mdl = TFAutoModel.from_pretrained(name)
-    return tok, mdl
+    try:
+        tok = AutoTokenizer.from_pretrained(name)
+        mdl = TFAutoModel.from_pretrained(name)
+        return tok, mdl
+    except Exception as e:
+        st.error(f"Failed to load BERT: {e}")
+        raise
 
 @st.cache_resource(show_spinner=True)
 def load_labels(labels_path: str, intents_json_path: str, csv_path: str) -> List[str]:
@@ -71,32 +75,34 @@ def load_labels(labels_path: str, intents_json_path: str, csv_path: str) -> List
 
     # 2) Fall back to intents.json (first tag per block, in order)
     if os.path.exists(intents_json_path):
-        data = json.load(open(intents_json_path, "r", encoding="utf-8"))
-        if isinstance(data, dict) and "intents" in data:
-            labels = []
-            for item in data["intents"]:
-                # support either "tag" or "tags": ["tag"]
-                tag = item.get("tag")
-                if not tag:
-                    tags = item.get("tags") or []
-                    if isinstance(tags, list) and tags:
-                        tag = tags[0]
-                if tag:
-                    labels.append(str(tag))
-            if labels:
-                return labels
+        try:
+            data = json.load(open(intents_json_path, "r", encoding="utf-8"))
+            if isinstance(data, dict) and "intents" in data:
+                labels = []
+                for item in data["intents"]:
+                    tag = item.get("tag") or (item.get("tags") or [None])[0]
+                    if tag:
+                        labels.append(str(tag))
+                if labels:
+                    return labels
+        except Exception as e:
+            st.error(f"Failed to load intents.json: {e}")
 
     # 3) Last resort: use CSV tags (alphabetical)
     if os.path.exists(csv_path):
-        df = pd.read_csv(csv_path)
-        if "tag" in df.columns:
-            return sorted(set(df["tag"].astype(str)))
+        try:
+            df = pd.read_csv(csv_path)
+            if "tag" in df.columns:
+                return sorted(set(df["tag"].astype(str)))
+        except Exception as e:
+            st.error(f"Failed to load CSV: {e}")
 
     # Default list (may not match training!)
+    st.warning("Using default labels, which may not match training!")
     return [
-        "greeting","anxious","sad","stressed","depressed","worthless","scared","friends","not-talking",
-        "panic-attack","breathing-exercise","grounding","self-care","motivation","hope",
-        "therapy","relapse","anger","guilt-shame","overwhelm","suicide"
+        "greeting", "anxious", "sad", "stressed", "depressed", "worthless", "scared", "friends",
+        "not-talking", "panic-attack", "breathing-exercise", "grounding", "self-care", "motivation",
+        "hope", "therapy", "relapse", "anger", "guilt-shame", "overwhelm", "suicide"
     ]
 
 @st.cache_resource(show_spinner=True)
@@ -105,7 +111,7 @@ def load_replies(csv_path: str, intents_json_path: str) -> Dict[str, List[str]]:
     if os.path.exists(csv_path):
         try:
             df = pd.read_csv(csv_path)
-            if {"answer","tag"}.issubset(df.columns):
+            if {"answer", "tag"}.issubset(df.columns):
                 m: Dict[str, List[str]] = {}
                 for t, grp in df.groupby("tag"):
                     answers = [a for a in grp["answer"].astype(str) if a.strip()]
@@ -113,19 +119,16 @@ def load_replies(csv_path: str, intents_json_path: str) -> Dict[str, List[str]]:
                         m[str(t)] = sorted(set(answers))
                 if any(m.values()):
                     return m
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Failed to load CSV replies: {e}")
+
     # 2) intents.json responses
     if os.path.exists(intents_json_path):
         try:
             data = json.load(open(intents_json_path, "r", encoding="utf-8"))
             m: Dict[str, List[str]] = {}
             for item in data.get("intents", []):
-                tag = item.get("tag")
-                if not tag:
-                    tags = item.get("tags") or []
-                    if isinstance(tags, list) and tags:
-                        tag = tags[0]
+                tag = item.get("tag") or (item.get("tags") or [None])[0]
                 resps = item.get("responses", [])
                 if tag and resps:
                     lst = [r.strip() for r in resps if isinstance(r, str) and r.strip()]
@@ -135,9 +138,10 @@ def load_replies(csv_path: str, intents_json_path: str) -> Dict[str, List[str]]:
                 m[k] = sorted(set(m[k]))
             if any(m.values()):
                 return m
-        except Exception:
-            pass
-    # 3) short fallbacks
+        except Exception as e:
+            st.error(f"Failed to load intents.json replies: {e}")
+
+    # 3) Short fallbacks
     return {
         "greeting": ["Hello there. How are you feeling right now?"],
         "anxious": ["That sounds exhausting. Would you like to try a short breathing exercise together?"],
@@ -166,11 +170,15 @@ def load_replies(csv_path: str, intents_json_path: str) -> Dict[str, List[str]]:
         ],
     }
 
-# cache loads
-pipeline = load_tf_model(MODEL_PATH)
-tokenizer, bert = load_bert(EMBEDDER_NAME)
-LABELS = load_labels(LABELS_PATH, INTENTS_JSON_PATH, CSV_PATH)
-REPLIES = load_replies(CSV_PATH, INTENTS_JSON_PATH)
+# Cache loads
+try:
+    pipeline = load_tf_model(MODEL_PATH)
+    tokenizer, bert = load_bert(EMBEDDER_NAME)
+    LABELS = load_labels("data/labels.json", INTENTS_JSON_PATH, CSV_PATH)
+    REPLIES = load_replies(CSV_PATH, INTENTS_JSON_PATH)
+except Exception as e:
+    st.error(f"Initialization failed: {e}")
+    st.stop()
 
 # ---------------------------
 # Helpers
@@ -187,24 +195,31 @@ def crisis_message():
             "If you can, reach out to someone you trust or a local crisis hotline. I’m here with you.")
 
 def text_to_bert768(texts: List[str]) -> np.ndarray:
-    enc = tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors="tf")
-    outputs = bert(**enc)
-    # CLS token vector (batch, hidden_size=768 for bert-base-uncased)
-    cls = outputs.last_hidden_state[:, 0, :]
-    return cls.numpy()
+    try:
+        enc = tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors="tf")
+        outputs = bert(**enc)
+        cls = outputs.last_hidden_state[:, 0, :]
+        return cls.numpy()
+    except Exception as e:
+        st.error(f"Error generating BERT embedding: {e}")
+        return np.zeros((len(texts), 768))
 
 def predict_intent_with_conf(text: str) -> Tuple[str, float]:
-    x = text_to_bert768([text])              # shape (1, 768)
-    probs = pipeline.predict(x, verbose=0)   # Keras softmax output
-    if isinstance(probs, list):
-        probs = probs[0]
-    probs = np.asarray(probs)
-    if probs.ndim == 1:
-        probs = np.expand_dims(probs, 0)
-    idx = int(np.argmax(probs, axis=1)[0])
-    conf = float(np.max(probs, axis=1)[0])
-    tag = LABELS[idx] if 0 <= idx < len(LABELS) else "greeting"
-    return tag, conf
+    try:
+        x = text_to_bert768([text])  # Shape (1, 768)
+        probs = pipeline.predict(x, verbose=0)  # Keras softmax output
+        if isinstance(probs, list):
+            probs = probs[0]
+        probs = np.asarray(probs)
+        if probs.ndim == 1:
+            probs = np.expand_dims(probs, 0)
+        idx = int(np.argmax(probs, axis=1)[0])
+        conf = float(np.max(probs, axis=1)[0])
+        tag = LABELS[idx] if 0 <= idx < len(LABELS) else "greeting"
+        return tag, conf
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
+        return "greeting", 0.0
 
 def sample_reply(tag: str) -> str:
     cand = REPLIES.get(tag, [])
@@ -221,8 +236,8 @@ with st.sidebar:
         st.session_state.setdefault("assistant_push", []).append(grounding_steps())
     st.markdown("---")
     st.caption(f"Model: `{MODEL_PATH}` • Threshold: {CONF_THRESHOLD:.2f}")
-    if not os.path.exists(LABELS_PATH):
-        st.caption("Tip: add model/labels.json for exact class order mapping.")
+    if not os.path.exists("data/labels.json"):
+        st.caption("Tip: add data/labels.json for exact class order mapping.")
 
 # ---------------------------
 # Header
@@ -255,7 +270,7 @@ if user_msg:
     with st.chat_message("user"):
         st.markdown(f'<div class="chat-bubble user-bubble">{user_msg}</div>', unsafe_allow_html=True)
 
-    # Crisis guard (always)
+    # Crisis guard
     if re := __import__("re"):
         if re.search(r"(kill myself|end my life|don.?t want to be here|i want to die|can.?t go on)", user_msg, re.I):
             reply = crisis_message()
