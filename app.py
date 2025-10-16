@@ -57,12 +57,37 @@ def load_tf_model(path: str):
 @st.cache_resource(show_spinner=True)
 def load_bert(name: str):
     try:
-        tok = AutoTokenizer.from_pretrained(name)
-        mdl = TFAutoModel.from_pretrained(name)
+        from huggingface_hub import snapshot_download, HfApi
+        st.write("Checking network access to Hugging Face Hub...")
+        api = HfApi()
+        model_info = api.model_info(name)
+        st.write(f"Model info: {model_info.modelId}")
+        st.write("Pre-downloading BERT model weights...")
+        snapshot_download(repo_id=name, cache_dir=".cache", allow_patterns=["*.bin", "*.json", "*.h5"])
+        st.write("Loading BERT tokenizer...")
+        tok = AutoTokenizer.from_pretrained(name, use_fast=True, cache_dir=".cache")
+        st.write("Loading BERT model...")
+        mdl = TFAutoModel.from_pretrained(name, cache_dir=".cache")
         return tok, mdl
     except Exception as e:
-        st.error(f"Failed to load BERT: {e}")
+        st.error(f"Failed to load BERT: {str(e)}")
+        st.error("Possible issues: Network failure, incompatible transformers/tensorflow versions, or missing dependencies.")
+        st.error("Check logs for details and ensure Hugging Face Hub is accessible.")
         raise
+
+# Cache loads
+try:
+    st.write("Loading Keras model...")
+    pipeline = load_tf_model(MODEL_PATH)
+    st.write("Loading BERT tokenizer and model...")
+    tokenizer, bert = load_bert(EMBEDDER_NAME)
+    st.write("Loading labels and replies...")
+    LABELS = load_labels("data/labels.json", INTENTS_JSON_PATH, CSV_PATH)
+    REPLIES = load_replies(CSV_PATH, INTENTS_JSON_PATH)
+    st.write("Initialization complete!")
+except Exception as e:
+    st.error(f"Initialization failed: {str(e)}")
+    st.stop()
 
 @st.cache_resource(show_spinner=True)
 def load_labels(labels_path: str, intents_json_path: str, csv_path: str) -> List[str]:
