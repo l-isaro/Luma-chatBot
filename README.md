@@ -5,6 +5,11 @@ It provides short, supportive responses for emotional wellbeing and crisis-aware
 
 ---
 
+## 🚀 Live Deployment
+[Open the Chatbot](https://huggingface.co/spaces/l-isaro/Luma)
+
+---
+
 ## ✨ Features
 
 - 🧠 **FLAN-T5–based model** fine-tuned on mental health conversations.  
